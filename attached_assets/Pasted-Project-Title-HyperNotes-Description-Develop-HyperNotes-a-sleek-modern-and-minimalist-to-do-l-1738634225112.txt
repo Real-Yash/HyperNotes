@@ -1,0 +1,69 @@
+Project Title: HyperNotes
+Description:
+Develop HyperNotes, a sleek, modern, and minimalist to-do list app focused on simplicity and efficiency. The app will function entirely offline without any login credentials. It will support dark mode with polished animations for an enhanced user experience.
+
+Core Features:
+🗂 Home Screen:
+A "Create" button to add new pages.
+On tapping, prompt the user to enter a name for the page.
+After creation, the page should appear on the dashboard as a preview card.
+Search Bar: To quickly search for pages or tasks.
+Bin/Trash Icon: To access deleted pages (Bin) and deleted tasks (Trash).
+Pull-to-Refresh: Refresh the list of pages with a simple pull-down gesture.
+📄 Page Management:
+Add Page: Create pages with customizable names.
+Page Preview: Display created pages on the home screen dashboard with a clean layout.
+Double-Tap to Edit Page Name: Users can double-tap on the page title to quickly rename it.
+Page Settings: Accessed via a 3-dot icon on each page, providing options to:
+Rename Page
+Delete Page (with confirmation dialog)
+Delete Page:
+Pages aren't permanently deleted; they go to the "Bin" section on the home screen.
+Page Display Preferences:
+Allow users to choose how pages are displayed (e.g., 2 or 3 pages per row).
+✅ Task Management:
+Add Task: Each page has an option to add tasks.
+Task Notes:
+Each task can have detailed notes.
+Notes are hidden by default but can be expanded with an arrow icon.
+Mark as Complete/Incomplete:
+Confirmation prompts before changing task status.
+Delete Task:
+Tasks go to a dedicated "Trash" page instead of being permanently deleted.
+Option to restore or permanently delete from Trash.
+🌙 Dark Mode:
+Support for dark mode with smooth, polished animations for transitions.
+Toggle option for switching between light and dark themes.
+🗑️ Bin & Trash Functionality:
+Bin (for Pages):
+Accessible from the home screen.
+Ability to restore or permanently delete pages.
+Trash (for Tasks):
+Dedicated page to manage deleted tasks.
+Options to restore tasks or clear the trash permanently.
+📊 History Tracking:
+Maintain an action history log to track activities like:
+Page creation/deletion
+Task addition/completion/deletion
+Restorations from bin/trash
+Modern Navigation Features:
+Swipe-to-Go-Back: Smooth back navigation with swipe gestures, mimicking native app behavior.
+Double-Tap to Edit: Quickly rename pages with a double-tap gesture on the page title.
+Pull-to-Refresh: Refresh the home screen and page/task lists with a pull-down gesture.
+Additional Considerations:
+Offline Functionality: Ensure all features work without an internet connection.
+Local Storage: Use local storage or databases (like AsyncStorage or SQLite) for data persistence.
+Accessibility:
+Adjustable font sizes
+High-contrast mode options
+Responsive Design: Optimized for various screen sizes and resolutions.
+Confirmation Dialogs: Before critical actions (delete, mark complete, etc.) to prevent accidental changes.
+Animations:
+Smooth transitions between screens
+Animated page/task interactions for better UX
+Tech Stack:
+Framework: React Native
+State Management: Redux or Context API (for efficient data handling)
+Storage: AsyncStorage / SQLite (for offline data persistence)
+Navigation: React Navigation with gesture support
+Animations: Reanimated & Gesture Handler (for polished animations)
