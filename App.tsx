@@ -3,6 +3,7 @@ import { View, Text, FlatList, TextInput, StyleSheet, Alert, Pressable, useColor
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationBar } from 'expo-navigation-bar';
+import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { db, Folder, Task, TaskWithFolder, Recurrence, initDb } from './src/db';
 import { themes, Theme, ThemeName } from './src/theme';
@@ -42,22 +43,23 @@ function tomorrowMorning9(): Date {
   return d;
 }
 
-function IconBtn({ theme, label, onPress, active = true, accessibilityLabel }: {
-  theme: Theme; label: string; onPress: () => void; active?: boolean; accessibilityLabel?: string;
+function IconBtn({ theme, icon, onPress, active = true, accessibilityLabel, color }: {
+  theme: Theme; icon: keyof typeof Ionicons.glyphMap; onPress: () => void; active?: boolean; accessibilityLabel?: string; color?: string;
 }) {
   return (
-    <Pressable onPress={onPress} accessibilityLabel={accessibilityLabel ?? label} hitSlop={8}
+    <Pressable onPress={onPress} accessibilityLabel={accessibilityLabel ?? icon} hitSlop={8}
       style={({ pressed }) => [s.iconBtn, { opacity: pressed ? 0.5 : active ? 1 : 0.35 }]}>
-      <Text style={s.iconBtnText}>{label}</Text>
+      <Ionicons name={icon} size={21} color={color ?? theme.text} />
     </Pressable>
   );
 }
 
-function MetaChip({ theme, label, tone = 'neutral' }: { theme: Theme; label: string; tone?: 'neutral' | 'accent' | 'danger' }) {
+function MetaChip({ theme, label, icon, tone = 'neutral' }: { theme: Theme; label?: string; icon?: keyof typeof Ionicons.glyphMap; tone?: 'neutral' | 'accent' | 'danger' }) {
   const color = tone === 'danger' ? theme.danger : tone === 'accent' ? theme.accent : theme.muted;
   return (
     <View style={[s.metaChip, { borderColor: color }]}>
-      <Text style={[s.metaChipText, { color }]}>{label}</Text>
+      {icon && <Ionicons name={icon} size={12} color={color} />}
+      {label ? <Text style={[s.metaChipText, { color }]}>{label}</Text> : null}
     </View>
   );
 }
@@ -80,9 +82,48 @@ function Checkbox({ theme, completed, onPress }: { theme: Theme; completed: bool
         borderColor: completed ? theme.accent : theme.muted,
         backgroundColor: completed ? theme.accent : 'transparent',
       }]}>
-        {completed && <Text style={[s.checkboxTick, { color: theme.onAccent }]}>✓</Text>}
+        {completed && <Ionicons name="checkmark" size={16} color={theme.onAccent} />}
       </View>
     </Pressable>
+  );
+}
+
+function DeleteFolderModal({ theme, folderName, visible, onCancel, onConfirm }: {
+  theme: Theme; folderName: string; visible: boolean; onCancel: () => void; onConfirm: () => void;
+}) {
+  const [value, setValue] = useState('');
+  useEffect(() => { if (visible) setValue(''); }, [visible]);
+  if (!visible) return null;
+  const match = folderName.trim().length > 0 && value.trim() === folderName.trim();
+  return (
+    <View style={s.modalOverlay}>
+      <View style={[s.modalCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+        <Text style={[s.modalTitle, { color: theme.text }]}>Delete “{folderName}”?</Text>
+        <Text style={[s.muted, { color: theme.muted }]}>
+          Everything inside moves to Bin. Type the folder name to confirm.
+        </Text>
+        <TextInput
+          autoFocus
+          value={value}
+          onChangeText={setValue}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder={folderName}
+          placeholderTextColor={theme.muted}
+          style={[s.input, { marginTop: 14, marginBottom: 0, backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
+        />
+        <View style={s.modalActions}>
+          <Pressable onPress={onCancel} style={[s.modalBtn, { borderColor: theme.border, borderWidth: 1 }]} accessibilityLabel="Cancel">
+            <Text style={[s.modalBtnText, { color: theme.text }]}>Cancel</Text>
+          </Pressable>
+          <Pressable onPress={() => match && onConfirm()} disabled={!match}
+            style={[s.modalBtn, { backgroundColor: match ? theme.danger : theme.chip }]}
+            accessibilityLabel="Confirm delete">
+            <Text style={[s.modalBtnText, { color: match ? '#FFFFFF' : theme.muted }]}>Delete</Text>
+          </Pressable>
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -101,10 +142,10 @@ function CrossTaskRow({ theme, task, onToggle, onOpen }: {
           <View style={s.metaRow}>
             {!!task.dueAt && (() => {
               const f = fmtDue(task.dueAt!);
-              return <MetaChip theme={theme} label={`📅 ${f.label}`} tone={f.overdue ? 'danger' : 'accent'} />;
+              return <MetaChip theme={theme} icon="calendar-outline" label={f.label} tone={f.overdue ? 'danger' : 'accent'} />;
             })()}
-            {!!task.recurrence && <MetaChip theme={theme} label={`🔁 ${RECUR_NAME[task.recurrence!]}`} />}
-            {!!task.reminderAt && <MetaChip theme={theme} label="⏰" />}
+            {!!task.recurrence && <MetaChip theme={theme} icon="repeat" label={RECUR_NAME[task.recurrence!]} />}
+            {!!task.reminderAt && <MetaChip theme={theme} icon="alarm-outline" />}
           </View>
         </View>
       </View>
@@ -172,10 +213,7 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenFolder, onOpenBin }
     refreshAll();
   };
 
-  const removeFolder = (p: Folder) => {
-    db.deleteFolder(p.id!).then(refreshAll);
-    showUndo(`"${p.name}" moved to Bin`, () => { db.restoreFolder(p.id!).then(refreshAll); });
-  };
+  const tiles: Array<Folder | 'create'> = [...folders, 'create'];
 
   const toggleTask = async (t: Task | TaskWithFolder) => {
     if (t.completed === 0 && t.id) await cancelTaskReminder(t.id);
@@ -210,7 +248,7 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenFolder, onOpenBin }
       <View style={s.header}>
         <Text style={[s.title, { color: theme.text }]}>HyperNotes</Text>
         <View style={s.headerRight}>
-          <IconBtn theme={theme} label={themeName === 'dark' ? '☀️' : '🌙'} onPress={onToggleTheme} accessibilityLabel="Toggle theme" />
+          <IconBtn theme={theme} icon={themeName === 'dark' ? 'sunny-outline' : 'moon-outline'} onPress={onToggleTheme} accessibilityLabel="Toggle theme" />
           <Pressable onPress={onOpenBin} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}>
             <Text style={[s.binBtn, { color: theme.accent }]}>Bin</Text>
           </Pressable>
@@ -247,7 +285,7 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenFolder, onOpenBin }
               <Text style={[s.section, { color: theme.muted }]}>FOLDERS</Text>
               {foundFolders.map(p => (
                 <Pressable key={p.id} onPress={() => onOpenFolder(p)} style={[s.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
-                  <Text style={[s.taskTitle, { color: theme.text }]}>📄 {p.name}</Text>
+                  <Text style={[s.taskTitle, { color: theme.text }]}>{p.name}</Text>
                 </Pressable>
               ))}
               <Text style={[s.section, { color: theme.muted, marginTop: 8 }]}>TASKS</Text>
@@ -268,41 +306,50 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenFolder, onOpenBin }
           }
         />
       ) : (
-        <>
-          <View style={s.row}>
-            <TextInput
-              style={[s.input, { flex: 1, marginBottom: 0, backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
-              placeholder="New folder name"
-              placeholderTextColor={theme.muted}
-              value={newName}
-              onChangeText={setNewName}
-              onSubmitEditing={create}
-            />
-            <Pressable onPress={create} style={[s.addBtn, { backgroundColor: theme.accent }]} accessibilityLabel="Create folder">
-              <Text style={[s.addBtnText, { color: theme.onAccent }]}>＋</Text>
-            </Pressable>
-          </View>
-          <FlatList
-            data={folders}
-            keyExtractor={item => String(item.id)}
-            numColumns={2}
-            columnWrapperStyle={s.tileRow}
-            contentContainerStyle={{ gap: 12, marginTop: 12 }}
-            renderItem={({ item }) => (
-              <Pressable onPress={() => onOpenFolder(item)} style={[s.tile, { backgroundColor: theme.card, borderColor: theme.border }]}>
-                <View style={s.tileTopRow}>
-                  <Text style={s.tileIcon}>🗂️</Text>
-                  <IconBtn theme={theme} label="🗑" onPress={() => removeFolder(item)} accessibilityLabel="Move folder to Bin" />
+        <FlatList
+          data={tiles}
+          keyExtractor={item => (item === 'create' ? '__create__' : 'f' + item.id)}
+          numColumns={2}
+          columnWrapperStyle={s.tileRow}
+          contentContainerStyle={{ gap: 12, marginTop: 12 }}
+          keyboardShouldPersistTaps="handled"
+          renderItem={({ item }) => {
+            if (item === 'create') {
+              return (
+                <View style={[s.tile, s.createTile, { borderColor: theme.border }]}>
+                  <Ionicons name="add-circle-outline" size={28} color={theme.muted} />
+                  <TextInput
+                    style={[s.tileInput, { color: theme.text, borderBottomColor: theme.border }]}
+                    placeholder={folders.length === 0 ? 'Create your first folder…' : 'New folder…'}
+                    placeholderTextColor={theme.muted}
+                    value={newName}
+                    onChangeText={setNewName}
+                    onSubmitEditing={create}
+                    returnKeyType="done"
+                    autoCorrect={false}
+                  />
+                  <Pressable
+                    onPress={create}
+                    disabled={!newName.trim()}
+                    style={[s.tileCreateBtn, { backgroundColor: newName.trim() ? theme.accent : theme.chip }]}
+                    accessibilityLabel="Create folder"
+                  >
+                    <Ionicons name="add" size={20} color={newName.trim() ? theme.onAccent : theme.muted} />
+                  </Pressable>
                 </View>
+              );
+            }
+            return (
+              <Pressable onPress={() => onOpenFolder(item)} style={[s.tile, { backgroundColor: theme.card, borderColor: theme.border }]} accessibilityLabel={`Open folder ${item.name}`}>
+                <Ionicons name="folder-outline" size={28} color={theme.accent} />
                 <View>
                   <Text style={[s.tileName, { color: theme.text }]} numberOfLines={2}>{item.name}</Text>
                   <Text style={[s.tileMeta, { color: theme.muted }]}>{counts[item.id!] ?? 0} open task{(counts[item.id!] ?? 0) === 1 ? '' : 's'}</Text>
                 </View>
               </Pressable>
-            )}
-            ListEmptyComponent={<Text style={[s.muted, { color: theme.muted }]}>No folders yet. Create one above.</Text>}
-          />
-        </>
+            );
+          }}
+        />
       )}
 
       {undo && <UndoBar theme={theme} message={undo.message} onUndo={() => { undo.action(); setUndo(null); }} />}
@@ -322,11 +369,20 @@ function FolderScreen({ theme, themeName, onToggleTheme, folder, onBack }: {
   const [reminderMode, setReminderMode] = useState<'date' | 'time' | 'datetime' | null>(null);
   const [dueTask, setDueTask] = useState<Task | null>(null);
   const [pendingDate, setPendingDate] = useState<Date>(new Date());
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [undo, setUndo] = useState<{ message: string; action: () => void } | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = async () => setTasks(await db.getTasks(folder.id!));
   useEffect(() => { load(); }, []);
+
+  const deleteFolderFlow = async () => {
+    setConfirmDelete(false);
+    const reminderIds = await db.clearFolderReminders(folder.id!);
+    await Promise.all(reminderIds.map(id => cancelTaskReminder(id)));
+    await db.deleteFolder(folder.id!);
+    onBack();
+  };
 
   const showUndo = (message: string, action: () => void) => {
     if (undoTimer.current) clearTimeout(undoTimer.current);
@@ -428,18 +484,21 @@ function FolderScreen({ theme, themeName, onToggleTheme, folder, onBack }: {
             <Text style={[s.taskTitle, { color: theme.text }, done && { textDecorationLine: 'line-through', color: theme.muted }]}>{item.title}</Text>
             {!!item.completedAt && <Text style={[s.muted, { color: theme.muted }]}>Done {new Date(item.completedAt).toLocaleString()}</Text>}
             <View style={s.metaRow}>
-              {due && <MetaChip theme={theme} label={`📅 ${due.label}`} tone={due.overdue ? 'danger' : 'accent'} />}
-              {!!item.reminderAt && <MetaChip theme={theme} label={`⏰ ${new Date(item.reminderAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`} />}
-              {!!item.recurrence && <MetaChip theme={theme} label={`🔁 ${RECUR_NAME[item.recurrence]}`} />}
+              {due && <MetaChip theme={theme} icon="calendar-outline" label={due.label} tone={due.overdue ? 'danger' : 'accent'} />}
+              {!!item.reminderAt && <MetaChip theme={theme} icon="alarm-outline" label={new Date(item.reminderAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} />}
+              {!!item.recurrence && <MetaChip theme={theme} icon="repeat" label={RECUR_NAME[item.recurrence]} />}
             </View>
           </View>
-          <IconBtn theme={theme} label="🔁" active={!!item.recurrence} onPress={() => recurrencePress(item)} accessibilityLabel="Set repeat" />
-          <IconBtn theme={theme} label="⏰" active={!!item.reminderAt} onPress={() => bellPress(item)} accessibilityLabel="Set reminder" />
-          <IconBtn theme={theme} label="📅" active={!!item.dueAt} onPress={() => duePress(item)} accessibilityLabel="Set due date" />
+          <IconBtn theme={theme} icon="repeat" active={!!item.recurrence} onPress={() => recurrencePress(item)} accessibilityLabel="Set repeat" />
+          <IconBtn theme={theme} icon="alarm-outline" active={!!item.reminderAt} onPress={() => bellPress(item)} accessibilityLabel="Set reminder" />
+          <IconBtn theme={theme} icon="calendar-outline" active={!!item.dueAt} onPress={() => duePress(item)} accessibilityLabel="Set due date" />
         </View>
         <View style={[s.cardRow, { marginTop: 6, justifyContent: 'flex-end' }]}>
-          <IconBtn theme={theme} label={expanded === item.id ? 'Hide notes ▴' : 'Notes ▾'} onPress={() => setExpanded(expanded === item.id ? null : item.id!)} />
-          <IconBtn theme={theme} label="🗑" onPress={() => removeTask(item)} accessibilityLabel="Move to Trash" />
+          <Pressable onPress={() => setExpanded(expanded === item.id ? null : item.id!)} style={s.notesToggle} hitSlop={6} accessibilityLabel="Toggle notes">
+            <Ionicons name={expanded === item.id ? 'chevron-up' : 'chevron-down'} size={14} color={theme.muted} />
+            <Text style={[s.notesToggleText, { color: theme.muted }]}>Notes</Text>
+          </Pressable>
+          <IconBtn theme={theme} icon="trash-outline" onPress={() => removeTask(item)} accessibilityLabel="Move to Trash" />
         </View>
         {expanded === item.id && (
           <TextInput
@@ -463,11 +522,14 @@ function FolderScreen({ theme, themeName, onToggleTheme, folder, onBack }: {
   return (
     <View style={[s.screen, { backgroundColor: theme.bg, paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={s.header}>
-        <Pressable onPress={onBack} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}>
-          <Text style={[s.binBtn, { color: theme.accent }]}>‹ Back</Text>
+        <Pressable onPress={onBack} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]} accessibilityLabel="Back">
+          <Ionicons name="chevron-back" size={26} color={theme.accent} />
         </Pressable>
         <Text style={[s.title, { color: theme.text, fontSize: 20 }]} numberOfLines={1}>{folder.name}</Text>
-        <IconBtn theme={theme} label={themeName === 'dark' ? '☀️' : '🌙'} onPress={onToggleTheme} accessibilityLabel="Toggle theme" />
+        <View style={s.headerRight}>
+          <IconBtn theme={theme} icon={themeName === 'dark' ? 'sunny-outline' : 'moon-outline'} onPress={onToggleTheme} accessibilityLabel="Toggle theme" />
+          <IconBtn theme={theme} icon="trash-outline" color={theme.danger} onPress={() => setConfirmDelete(true)} accessibilityLabel="Delete folder" />
+        </View>
       </View>
 
       <View style={s.row}>
@@ -480,7 +542,7 @@ function FolderScreen({ theme, themeName, onToggleTheme, folder, onBack }: {
           onSubmitEditing={addTask}
         />
         <Pressable onPress={addTask} style={[s.addBtn, { backgroundColor: theme.accent }]} accessibilityLabel="Add task">
-          <Text style={[s.addBtnText, { color: theme.onAccent }]}>＋</Text>
+          <Ionicons name="add" size={22} color={theme.onAccent} />
         </Pressable>
       </View>
 
@@ -523,6 +585,14 @@ function FolderScreen({ theme, themeName, onToggleTheme, folder, onBack }: {
         />
       )}
 
+      <DeleteFolderModal
+        theme={theme}
+        folderName={folder.name}
+        visible={confirmDelete}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={deleteFolderFlow}
+      />
+
       {undo && <UndoBar theme={theme} message={undo.message} onUndo={() => { undo.action(); setUndo(null); }} />}
     </View>
   );
@@ -542,7 +612,7 @@ function BinScreen({ theme, onBack }: { theme: Theme; onBack: () => void }) {
     <View style={[s.screen, { backgroundColor: theme.bg, paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={s.header}>
         <Pressable onPress={onBack} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}>
-          <Text style={[s.binBtn, { color: theme.accent }]}>‹ Back</Text>
+          <Ionicons name="chevron-back" size={26} color={theme.accent} />
         </Pressable>
         <Text style={[s.title, { color: theme.text, fontSize: 20 }]}>Bin / Trash</Text>
         <View style={{ width: 44 }} />
@@ -567,7 +637,7 @@ function BinScreen({ theme, onBack }: { theme: Theme; onBack: () => void }) {
         keyExtractor={i => 't' + i.id}
         renderItem={({ item }) => (
           <View style={[s.card, s.cardRow, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <Text style={[s.taskTitle, { color: theme.text, flex: 1 }]} numberOfLines={1}>🗑 {item.title}</Text>
+            <Text style={[s.taskTitle, { color: theme.text, flex: 1 }]} numberOfLines={1}>{item.title}</Text>
             <Pressable onPress={async () => { await db.restoreTask(item.id!); load(); }} style={[s.chip, { backgroundColor: theme.chip }]}>
               <Text style={[s.chipText, { color: theme.text }]}>Restore</Text>
             </Pressable>
@@ -624,19 +694,16 @@ const s = StyleSheet.create({
     flex: 1, aspectRatio: 1.25, borderWidth: 1, borderRadius: 18,
     padding: 14, justifyContent: 'space-between',
   },
-  tileTopRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
-  tileIcon: { fontSize: 30 },
   tileName: { fontSize: 16, fontWeight: '800', letterSpacing: 0.2 },
   tileMeta: { fontSize: 11, fontWeight: '600', marginTop: 2 },
   fill: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   iconBtn: { paddingHorizontal: 4, paddingVertical: 2 },
-  iconBtnText: { fontSize: 17 },
   checkbox: {
     width: 24, height: 24, borderWidth: 2, borderRadius: 6,
     alignItems: 'center', justifyContent: 'center',
   },
-  checkboxTick: { fontSize: 15, fontWeight: '800' },
   metaChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
     borderWidth: 1, borderRadius: 999,
     paddingHorizontal: 7, paddingVertical: 1, marginRight: 6, marginTop: 4,
     alignSelf: 'flex-start',
@@ -669,11 +736,21 @@ const s = StyleSheet.create({
   },
   row: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   addBtn: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  addBtnText: { fontSize: 22, fontWeight: '700' },
   chipsRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   chip: { borderRadius: 999, paddingHorizontal: 14, paddingVertical: 7 },
   chipText: { fontSize: 13, fontWeight: '700' },
   card: { borderWidth: 1, borderRadius: 14, padding: 12, marginBottom: 10 },
   cardRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   textarea: { borderWidth: 1, borderRadius: 10, padding: 10, marginTop: 8, minHeight: 90, textAlignVertical: 'top', fontSize: 14 },
+  notesToggle: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  notesToggleText: { fontSize: 12, fontWeight: '700' },
+  createTile: { borderWidth: 1.5, borderStyle: 'dashed', backgroundColor: 'transparent', gap: 10, justifyContent: 'flex-start' },
+  tileInput: { borderBottomWidth: 1, paddingVertical: 6, fontSize: 15 },
+  tileCreateBtn: { alignSelf: 'flex-end', width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  modalOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center', padding: 26, zIndex: 20 },
+  modalCard: { width: '100%', borderWidth: 1, borderRadius: 16, padding: 20 },
+  modalTitle: { fontSize: 17, fontWeight: '800', marginBottom: 6 },
+  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 14 },
+  modalBtn: { borderRadius: 10, paddingHorizontal: 18, paddingVertical: 11 },
+  modalBtnText: { fontSize: 14, fontWeight: '800' },
 });

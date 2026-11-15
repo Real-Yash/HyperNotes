@@ -169,6 +169,15 @@ export const db = {
     await d.runAsync('INSERT INTO folders (name, createdAt, isDeleted) VALUES (?, ?, 0)', [n, Date.now()]);
     await log('create_folder', 'Created folder: ' + n);
   },
+  async clearFolderReminders(folderId: number) {
+    const d = await getDb();
+    const rows = await d.getAllAsync<{ id: number }>(
+      'SELECT id FROM tasks WHERE pageId = ? AND reminderAt IS NOT NULL',
+      [folderId],
+    );
+    await d.runAsync('UPDATE tasks SET reminderAt = NULL WHERE pageId = ? AND reminderAt IS NOT NULL', [folderId]);
+    return rows.map(r => r.id);
+  },
   async deleteFolder(id: number) {
     const d = await getDb();
     await d.runAsync('UPDATE folders SET isDeleted = 1 WHERE id = ?', [id]);
