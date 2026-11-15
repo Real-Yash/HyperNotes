@@ -1,12 +1,33 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, FlatList, TextInput, Button, StyleSheet, Alert, TouchableOpacity, SafeAreaView, Platform } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, FlatList, TextInput, StyleSheet, Alert, Pressable, useColorScheme, Platform } from 'react-native';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
+import { NavigationBar } from 'expo-navigation-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { db, Page, Task, initDb } from './src/db';
+import { db, Page, Task, TaskWithPage, Recurrence, initDb } from './src/db';
+import { themes, Theme, ThemeName } from './src/theme';
 import { initNotifications, requestReminderPermission, scheduleTaskReminder, cancelTaskReminder } from './src/notifications';
 
 // Register the foreground notification handler as early as possible.
 initNotifications();
+
+const RECUR_LABEL: Record<Recurrence, string> = { daily: 'D', weekly: 'W', monthly: 'M' };
+const RECUR_NAME: Record<Recurrence, string> = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
+
+const startOfDay = (t: number) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+
+function fmtDue(ts: number): { label: string; overdue: boolean } {
+  const day = startOfDay(ts);
+  const today = startOfDay(Date.now());
+  const diff = Math.round((day - today) / 86400000);
+  const overdue = ts < Date.now() && diff <= 0;
+  if (diff === 0) return { label: 'Today', overdue: false };
+  if (diff === 1) return { label: 'Tomorrow', overdue: false };
+  if (diff === -1) return { label: 'Yesterday', overdue: true };
+  const d = new Date(ts);
+  const label = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
+  return { label, overdue: diff < 0 };
+}
 
 function combineDateAndTime(datePart: Date, timePart: Date): Date {
   const d = new Date(datePart);
@@ -21,11 +42,99 @@ function tomorrowMorning9(): Date {
   return d;
 }
 
-function HomeScreen({ onOpenPage, onOpenBin }: { onOpenPage: (page: Page) => void; onOpenBin: () => void }) {
+function IconBtn({ theme, label, onPress, active = true, accessibilityLabel }: {
+  theme: Theme; label: string; onPress: () => void; active?: boolean; accessibilityLabel?: string;
+}) {
+  return (
+    <Pressable onPress={onPress} accessibilityLabel={accessibilityLabel ?? label} hitSlop={8}
+      style={({ pressed }) => [s.iconBtn, { opacity: pressed ? 0.5 : active ? 1 : 0.35 }]}>
+      <Text style={s.iconBtnText}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function MetaChip({ theme, label, tone = 'neutral' }: { theme: Theme; label: string; tone?: 'neutral' | 'accent' | 'danger' }) {
+  const color = tone === 'danger' ? theme.danger : tone === 'accent' ? theme.accent : theme.muted;
+  return (
+    <View style={[s.metaChip, { borderColor: color }]}>
+      <Text style={[s.metaChipText, { color }]}>{label}</Text>
+    </View>
+  );
+}
+
+function UndoBar({ theme, message, onUndo }: { theme: Theme; message: string; onUndo: () => void }) {
+  return (
+    <View style={[s.undoBar, { backgroundColor: theme.chip, borderColor: theme.border }]}>
+      <Text style={[s.undoText, { color: theme.text }]} numberOfLines={1}>{message}</Text>
+      <Pressable onPress={onUndo} hitSlop={8}>
+        <Text style={[s.undoAction, { color: theme.accent }]}>UNDO</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function Checkbox({ theme, completed, onPress }: { theme: Theme; completed: boolean; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} accessibilityLabel={completed ? 'Mark incomplete' : 'Mark complete'} hitSlop={6}>
+      <View style={[s.checkbox, {
+        borderColor: completed ? theme.accent : theme.muted,
+        backgroundColor: completed ? theme.accent : 'transparent',
+      }]}>
+        {completed && <Text style={[s.checkboxTick, { color: theme.onAccent }]}>✓</Text>}
+      </View>
+    </Pressable>
+  );
+}
+
+/* ---------- Cross-page task row (search & smart views) ---------- */
+
+function CrossTaskRow({ theme, task, onToggle, onOpen }: {
+  theme: Theme; task: TaskWithPage; onToggle: (t: TaskWithPage) => void; onOpen: (t: TaskWithPage) => void;
+}) {
+  return (
+    <Pressable onPress={() => onOpen(task)} style={[s.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+      <View style={s.cardRow}>
+        <Checkbox theme={theme} completed={task.completed === 1} onPress={() => onToggle(task)} />
+        <View style={{ flex: 1 }}>
+          <Text style={[s.pageTag, { color: theme.muted }]} numberOfLines={1}>{task.pageName}</Text>
+          <Text style={[s.taskTitle, { color: theme.text }]} numberOfLines={2}>{task.title}</Text>
+          <View style={s.metaRow}>
+            {!!task.dueAt && (() => {
+              const f = fmtDue(task.dueAt!);
+              return <MetaChip theme={theme} label={`📅 ${f.label}`} tone={f.overdue ? 'danger' : 'accent'} />;
+            })()}
+            {!!task.recurrence && <MetaChip theme={theme} label={`🔁 ${RECUR_NAME[task.recurrence!]}`} />}
+            {!!task.reminderAt && <MetaChip theme={theme} label="⏰" />}
+          </View>
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+/* ---------- Screens ---------- */
+
+function HomeScreen({ theme, themeName, onToggleTheme, onOpenPage, onOpenBin }: {
+  theme: Theme; themeName: ThemeName; onToggleTheme: () => void;
+  onOpenPage: (p: Page) => void; onOpenBin: () => void;
+}) {
+  const insets = useSafeAreaInsets();
   const [pages, setPages] = useState<Page[]>([]);
   const [newName, setNewName] = useState('');
   const [query, setQuery] = useState('');
+  const [view, setView] = useState<'all' | 'today' | 'upcoming'>('all');
+  const [dueTasks, setDueTasks] = useState<TaskWithPage[]>([]);
+  const [foundTasks, setFoundTasks] = useState<TaskWithPage[]>([]);
+  const [foundPages, setFoundPages] = useState<Page[]>([]);
   const [ready, setReady] = useState(false);
+  const [undo, setUndo] = useState<{ message: string; action: () => void } | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showUndo = (message: string, action: () => void) => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setUndo({ message, action });
+    undoTimer.current = setTimeout(() => setUndo(null), 4500);
+  };
 
   const load = async () => {
     await initDb();
@@ -34,67 +143,215 @@ function HomeScreen({ onOpenPage, onOpenBin }: { onOpenPage: (page: Page) => voi
   };
   useEffect(() => { load(); }, []);
 
+  const refreshSmart = async () => {
+    if (view === 'all') { setDueTasks([]); return; }
+    setDueTasks(await db.getDueTasks(view));
+  };
+  useEffect(() => { refreshSmart(); }, [view]);
+
+  // Debounced FTS search
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) { setFoundTasks([]); setFoundPages([]); return; }
+    const t = setTimeout(async () => {
+      setFoundTasks(await db.searchTasks(q));
+      setFoundPages(await db.searchPages(q));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const refreshAll = () => { load(); refreshSmart(); };
+
   const create = async () => {
     const name = newName.trim();
     if (!name) return;
     await db.createPage(name);
     setNewName('');
-    load();
+    refreshAll();
   };
 
-  const remove = (p: Page) => {
-    Alert.alert('Delete page?', `"${p.name}" will be moved to Bin.`, [
-      { text: 'Cancel' },
-      { text: 'Delete', onPress: async () => { await db.deletePage(p.id!); load(); } },
-    ]);
+  const removePage = (p: Page) => {
+    db.deletePage(p.id!).then(refreshAll);
+    showUndo(`"${p.name}" moved to Bin`, () => { db.restorePage(p.id!).then(refreshAll); });
   };
 
-  const filtered = pages.filter(p => p.name.toLowerCase().includes(query.toLowerCase()));
+  const toggleTask = async (t: Task | TaskWithPage) => {
+    if (t.completed === 0 && t.id) await cancelTaskReminder(t.id);
+    await db.toggleTask(t.id!);
+    refreshAll();
+    if (t.completed === 0) {
+      showUndo('Done ✓', () => db.toggleTask(t.id!).then(refreshAll));
+    }
+  };
 
-  if (!ready) return <View style={s.center}><Text>Loading…</Text></View>;
+  const openTaskPage = async (t: TaskWithPage) => {
+    const page = await db.getPageById(t.pageId);
+    if (page) onOpenPage(page);
+  };
+
+  const searching = query.trim().length > 0;
+
+  const chips: Array<{ key: typeof view; label: string }> = [
+    { key: 'all', label: 'All' },
+    { key: 'today', label: 'Today' },
+    { key: 'upcoming', label: 'Upcoming' },
+  ];
+
+  if (!ready) {
+    return <View style={[s.fill, { backgroundColor: theme.bg }]}><Text style={[s.muted, { color: theme.muted }]}>Loading…</Text></View>;
+  }
 
   return (
-    <SafeAreaView style={s.container}>
+    <View style={[s.screen, { backgroundColor: theme.bg, paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+      {/* Status/nav bars are translucent; insets.top/bottom handle 3-button vs gesture nav. */}
+
       <View style={s.header}>
-        <Text style={s.title}>HyperNotes</Text>
-        <Button title="Bin" onPress={onOpenBin} />
+        <Text style={[s.title, { color: theme.text }]}>HyperNotes</Text>
+        <View style={s.headerRight}>
+          <IconBtn theme={theme} label={themeName === 'dark' ? '☀️' : '🌙'} onPress={onToggleTheme} accessibilityLabel="Toggle theme" />
+          <Pressable onPress={onOpenBin} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}>
+            <Text style={[s.binBtn, { color: theme.accent }]}>Bin</Text>
+          </Pressable>
+        </View>
       </View>
-      <TextInput style={s.input} placeholder="Search pages…" value={query} onChangeText={setQuery} />
-      <View style={s.row}>
-        <TextInput style={[s.input, { flex: 1 }]} placeholder="New page name" value={newName} onChangeText={setNewName} onSubmitEditing={create} />
-        <Button title="+" onPress={create} />
-      </View>
-      <FlatList
-        data={filtered}
-        keyExtractor={item => String(item.id)}
-        renderItem={({ item }) => (
-          <TouchableOpacity style={s.card} onPress={() => onOpenPage(item)}>
-            <View style={s.cardRow}>
-              <Text style={s.cardTitle}>{item.name}</Text>
-              <Button title="🗑" onPress={() => remove(item)} />
-            </View>
-            <Text style={s.muted}>Created {new Date(item.createdAt).toLocaleDateString()}</Text>
-          </TouchableOpacity>
-        )}
-        ListEmptyComponent={<Text style={s.muted}>No pages yet. Create one above.</Text>}
+
+      <TextInput
+        style={[s.input, { backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
+        placeholder="Search tasks & pages…"
+        placeholderTextColor={theme.muted}
+        value={query}
+        onChangeText={setQuery}
+        autoCorrect={false}
       />
-      <StatusBar style="auto" />
-    </SafeAreaView>
+
+      {!searching && (
+        <View style={s.chipsRow}>
+          {chips.map(c => (
+            <Pressable key={c.key} onPress={() => setView(c.key)} hitSlop={4}
+              style={[s.chip, { backgroundColor: view === c.key ? theme.chipActive : theme.chip }]}>
+              <Text style={[s.chipText, { color: view === c.key ? theme.onChipActive : theme.text }]}>{c.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+
+      {searching ? (
+        <FlatList
+          data={foundTasks}
+          keyExtractor={item => 't' + item.id}
+          keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={foundPages.length > 0 ? (
+            <View style={{ marginBottom: 8 }}>
+              <Text style={[s.section, { color: theme.muted }]}>PAGES</Text>
+              {foundPages.map(p => (
+                <Pressable key={p.id} onPress={() => onOpenPage(p)} style={[s.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+                  <Text style={[s.taskTitle, { color: theme.text }]}>📄 {p.name}</Text>
+                </Pressable>
+              ))}
+              <Text style={[s.section, { color: theme.muted, marginTop: 8 }]}>TASKS</Text>
+            </View>
+          ) : undefined}
+          renderItem={({ item }) => <CrossTaskRow theme={theme} task={item} onToggle={toggleTask} onOpen={openTaskPage} />}
+          ListEmptyComponent={foundPages.length === 0 ? <Text style={[s.muted, { color: theme.muted }]}>No matches for “{query.trim()}”.</Text> : undefined}
+        />
+      ) : view !== 'all' ? (
+        <FlatList
+          data={dueTasks}
+          keyExtractor={item => 'd' + item.id}
+          renderItem={({ item }) => <CrossTaskRow theme={theme} task={item} onToggle={toggleTask} onOpen={openTaskPage} />}
+          ListEmptyComponent={
+            <Text style={[s.muted, { color: theme.muted }]}>
+              {view === 'today' ? 'Nothing due today or overdue. Nice.' : 'Nothing due in the next 7 days.'}
+            </Text>
+          }
+        />
+      ) : (
+        <>
+          <View style={s.row}>
+            <TextInput
+              style={[s.input, { flex: 1, marginBottom: 0, backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
+              placeholder="New page name"
+              placeholderTextColor={theme.muted}
+              value={newName}
+              onChangeText={setNewName}
+              onSubmitEditing={create}
+            />
+            <Pressable onPress={create} style={[s.addBtn, { backgroundColor: theme.accent }]} accessibilityLabel="Create page">
+              <Text style={[s.addBtnText, { color: theme.onAccent }]}>＋</Text>
+            </Pressable>
+          </View>
+          <FlatList
+            data={pages}
+            keyExtractor={item => String(item.id)}
+            style={{ marginTop: 12 }}
+            renderItem={({ item }) => (
+              <Pressable onPress={() => onOpenPage(item)} style={[s.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+                <View style={s.cardRow}>
+                  <Text style={[s.taskTitle, { color: theme.text, flex: 1 }]} numberOfLines={1}>{item.name}</Text>
+                  <IconBtn theme={theme} label="🗑" onPress={() => removePage(item)} accessibilityLabel="Move to Bin" />
+                </View>
+                <Text style={[s.muted, { color: theme.muted }]}>Created {new Date(item.createdAt).toLocaleDateString()}</Text>
+              </Pressable>
+            )}
+            ListEmptyComponent={<Text style={[s.muted, { color: theme.muted }]}>No pages yet. Create one above.</Text>}
+          />
+        </>
+      )}
+
+      {undo && <UndoBar theme={theme} message={undo.message} onUndo={() => { undo.action(); setUndo(null); }} />}
+    </View>
   );
 }
 
-function PageScreen({ page, onBack }: { page: Page; onBack: () => void }) {
+function PageScreen({ theme, themeName, onToggleTheme, page, onBack }: {
+  theme: Theme; themeName: ThemeName; onToggleTheme: () => void; page: Page; onBack: () => void;
+}) {
+  const insets = useSafeAreaInsets();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [newTask, setNewTask] = useState('');
   const [expanded, setExpanded] = useState<number | null>(null);
   const [notesDraft, setNotesDraft] = useState<Record<number, string>>({});
-  const [pickerTask, setPickerTask] = useState<Task | null>(null);
-  const [pickerMode, setPickerMode] = useState<'date' | 'time' | 'datetime' | null>(null);
+  const [reminderTask, setReminderTask] = useState<Task | null>(null);
+  const [reminderMode, setReminderMode] = useState<'date' | 'time' | 'datetime' | null>(null);
+  const [dueTask, setDueTask] = useState<Task | null>(null);
   const [pendingDate, setPendingDate] = useState<Date>(new Date());
+  const [undo, setUndo] = useState<{ message: string; action: () => void } | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = async () => setTasks(await db.getTasks(page.id!));
   useEffect(() => { load(); }, []);
 
+  const showUndo = (message: string, action: () => void) => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setUndo({ message, action });
+    undoTimer.current = setTimeout(() => setUndo(null), 4500);
+  };
+
+  const addTask = async () => {
+    const title = newTask.trim();
+    if (!title) return;
+    await db.createTask(page.id!, title);
+    setNewTask('');
+    load();
+  };
+
+  const toggle = async (t: Task) => {
+    if (t.completed === 0 && t.id) await cancelTaskReminder(t.id);
+    await db.toggleTask(t.id!);
+    load();
+    const completing = t.completed === 0;
+    showUndo(completing ? (t.recurrence ? `Done ✓ — next ${RECUR_NAME[t.recurrence]} task scheduled` : 'Done ✓') : 'Reopened',
+      () => { db.toggleTask(t.id!).then(load); });
+  };
+
+  const removeTask = async (t: Task) => {
+    if (t.id) await cancelTaskReminder(t.id);
+    await db.deleteTask(t.id!);
+    load();
+    showUndo('Moved to Trash', () => { db.restoreTask(t.id!).then(load); });
+  };
+
+  /* Reminders */
   const scheduleReminder = async (t: Task, date: Date) => {
     if (date.getTime() <= Date.now()) {
       Alert.alert('Pick a future time', 'The reminder must be set in the future.');
@@ -109,145 +366,163 @@ function PageScreen({ page, onBack }: { page: Page; onBack: () => void }) {
     await db.setReminder(t.id!, date.getTime());
     load();
   };
-
   const clearReminder = async (t: Task) => {
     await cancelTaskReminder(t.id!);
     await db.setReminder(t.id!, null);
     load();
   };
-
   const bellPress = (t: Task) => {
     const options: Array<{ text: string; onPress?: () => void; style?: 'cancel' }> = [
-      { text: 'In 1 hour', onPress: () => scheduleReminder(t, new Date(Date.now() + 60 * 60 * 1000)) },
+      { text: 'In 1 hour', onPress: () => scheduleReminder(t, new Date(Date.now() + 3600_000)) },
       { text: 'Tomorrow 9:00 AM', onPress: () => scheduleReminder(t, tomorrowMorning9()) },
       {
         text: 'Pick date & time…',
-        onPress: () => {
-          setPendingDate(new Date(Date.now() + 60 * 60 * 1000));
-          setPickerTask(t);
-          setPickerMode(Platform.OS === 'ios' ? 'datetime' : 'date');
-        },
+        onPress: () => { setPendingDate(new Date(Date.now() + 3600_000)); setReminderTask(t); setReminderMode(Platform.OS === 'ios' ? 'datetime' : 'date'); },
       },
     ];
-    if (t.reminderAt) {
-      options.push({ text: 'Clear reminder', onPress: () => clearReminder(t) });
-    }
+    if (t.reminderAt) options.push({ text: 'Clear reminder', onPress: () => clearReminder(t) });
     options.push({ text: 'Cancel', style: 'cancel' });
-    Alert.alert(
-      'Task reminder',
-      t.reminderAt ? `Currently set for ${new Date(t.reminderAt).toLocaleString()}` : 'When should we remind you?',
-      options,
+    Alert.alert('Task reminder', t.reminderAt ? `Set for ${new Date(t.reminderAt).toLocaleString()}` : 'When should we remind you?', options);
+  };
+
+  /* Due date */
+  const duePress = (t: Task) => {
+    if (t.dueAt) {
+      Alert.alert('Due date', `Currently due ${new Date(t.dueAt).toLocaleString()}`, [
+        { text: 'Change…', onPress: () => { setPendingDate(new Date(t.dueAt!)); setDueTask(t); } },
+        { text: 'Clear', onPress: async () => { await db.setDue(t.id!, null); load(); } },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    } else {
+      setPendingDate(new Date());
+      setDueTask(t);
+    }
+  };
+
+  /* Recurrence */
+  const recurrencePress = (t: Task) => {
+    Alert.alert('Repeat', 'How often should this task repeat after completion?', [
+      { text: 'None', onPress: async () => { await db.setRecurrence(t.id!, null); load(); } },
+      { text: 'Daily', onPress: async () => { await db.setRecurrence(t.id!, 'daily'); load(); } },
+      { text: 'Weekly', onPress: async () => { await db.setRecurrence(t.id!, 'weekly'); load(); } },
+      { text: 'Monthly', onPress: async () => { await db.setRecurrence(t.id!, 'monthly'); load(); } },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const renderTask = ({ item }: { item: Task }) => {
+    const due = item.dueAt ? fmtDue(item.dueAt) : null;
+    const done = item.completed === 1;
+    return (
+      <View style={[s.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+        <View style={s.cardRow}>
+          <Checkbox theme={theme} completed={done} onPress={() => toggle(item)} />
+          <View style={{ flex: 1 }}>
+            <Text style={[s.taskTitle, { color: theme.text }, done && { textDecorationLine: 'line-through', color: theme.muted }]}>{item.title}</Text>
+            {!!item.completedAt && <Text style={[s.muted, { color: theme.muted }]}>Done {new Date(item.completedAt).toLocaleString()}</Text>}
+            <View style={s.metaRow}>
+              {due && <MetaChip theme={theme} label={`📅 ${due.label}`} tone={due.overdue ? 'danger' : 'accent'} />}
+              {!!item.reminderAt && <MetaChip theme={theme} label={`⏰ ${new Date(item.reminderAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`} />}
+              {!!item.recurrence && <MetaChip theme={theme} label={`🔁 ${RECUR_NAME[item.recurrence]}`} />}
+            </View>
+          </View>
+          <IconBtn theme={theme} label="🔁" active={!!item.recurrence} onPress={() => recurrencePress(item)} accessibilityLabel="Set repeat" />
+          <IconBtn theme={theme} label="⏰" active={!!item.reminderAt} onPress={() => bellPress(item)} accessibilityLabel="Set reminder" />
+          <IconBtn theme={theme} label="📅" active={!!item.dueAt} onPress={() => duePress(item)} accessibilityLabel="Set due date" />
+        </View>
+        <View style={[s.cardRow, { marginTop: 6, justifyContent: 'flex-end' }]}>
+          <IconBtn theme={theme} label={expanded === item.id ? 'Hide notes ▴' : 'Notes ▾'} onPress={() => setExpanded(expanded === item.id ? null : item.id!)} />
+          <IconBtn theme={theme} label="🗑" onPress={() => removeTask(item)} accessibilityLabel="Move to Trash" />
+        </View>
+        {expanded === item.id && (
+          <TextInput
+            style={[s.textarea, { borderColor: theme.border, color: theme.text, backgroundColor: theme.surface }]}
+            placeholder="Add notes…"
+            placeholderTextColor={theme.muted}
+            multiline
+            value={notesDraft[item.id!] ?? item.notes ?? ''}
+            onChangeText={v => setNotesDraft(prev => ({ ...prev, [item.id!]: v }))}
+            onBlur={async () => {
+              const v = notesDraft[item.id!] ?? item.notes ?? '';
+              await db.updateNotes(item.id!, v);
+              load();
+            }}
+          />
+        )}
+      </View>
     );
   };
 
-  const addTask = async () => {
-    const title = newTask.trim();
-    if (!title) return;
-    await db.createTask(page.id!, title);
-    setNewTask('');
-    load();
-  };
-
-  const toggle = (t: Task) => {
-    Alert.alert(t.completed === 1 ? 'Mark incomplete?' : 'Mark complete?', undefined, [
-      { text: 'Cancel' },
-      { text: 'OK', onPress: async () => {
-        if (t.completed === 0 && t.id) await cancelTaskReminder(t.id); // completing
-        await db.toggleTask(t.id!);
-        load();
-      } },
-    ]);
-  };
-
-  const removeTask = (t: Task) => {
-    Alert.alert('Delete task?', 'It will be moved to Trash.', [
-      { text: 'Cancel' },
-      { text: 'Delete', onPress: async () => {
-        if (t.id) await cancelTaskReminder(t.id);
-        await db.deleteTask(t.id!);
-        load();
-      } },
-    ]);
-  };
-
   return (
-    <SafeAreaView style={s.container}>
+    <View style={[s.screen, { backgroundColor: theme.bg, paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={s.header}>
-        <Button title="‹ Back" onPress={onBack} />
-        <Text style={s.title}>{page.name}</Text>
+        <Pressable onPress={onBack} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}>
+          <Text style={[s.binBtn, { color: theme.accent }]}>‹ Back</Text>
+        </Pressable>
+        <Text style={[s.title, { color: theme.text, fontSize: 20 }]} numberOfLines={1}>{page.name}</Text>
+        <IconBtn theme={theme} label={themeName === 'dark' ? '☀️' : '🌙'} onPress={onToggleTheme} accessibilityLabel="Toggle theme" />
       </View>
+
       <View style={s.row}>
-        <TextInput style={[s.input, { flex: 1 }]} placeholder="Add a new task…" value={newTask} onChangeText={setNewTask} onSubmitEditing={addTask} />
-        <Button title="+" onPress={addTask} />
+        <TextInput
+          style={[s.input, { flex: 1, marginBottom: 0, backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
+          placeholder="Add a new task…"
+          placeholderTextColor={theme.muted}
+          value={newTask}
+          onChangeText={setNewTask}
+          onSubmitEditing={addTask}
+        />
+        <Pressable onPress={addTask} style={[s.addBtn, { backgroundColor: theme.accent }]} accessibilityLabel="Add task">
+          <Text style={[s.addBtnText, { color: theme.onAccent }]}>＋</Text>
+        </Pressable>
       </View>
-      {pickerMode && pickerTask && (
+
+      <FlatList data={tasks} keyExtractor={item => String(item.id)} renderItem={renderTask} style={{ marginTop: 12 }}
+        ListEmptyComponent={<Text style={[s.muted, { color: theme.muted }]}>No tasks yet. Add one above.</Text>} />
+
+      {/* Due-date picker (single step) */}
+      {dueTask && (
         <DateTimePicker
           value={pendingDate}
-          mode={pickerMode}
+          mode="date"
+          minimumDate={new Date(Date.now() - 365 * 86400000)}
+          onChange={(event: DateTimePickerEvent, selected?: Date) => {
+            if (Platform.OS === 'android' && event.type === 'dismissed') { setDueTask(null); return; }
+            const picked = selected ?? pendingDate;
+            const t = dueTask;
+            setDueTask(null);
+            db.setDue(t.id!, picked.getTime()).then(load);
+          }}
+        />
+      )}
+
+      {/* Reminder picker (Android: date then time; iOS: datetime) */}
+      {reminderMode && reminderTask && (
+        <DateTimePicker
+          value={pendingDate}
+          mode={reminderMode}
           minimumDate={new Date()}
           is24Hour
           onChange={(event: DateTimePickerEvent, selected?: Date) => {
-            if (Platform.OS === 'android' && event.type === 'dismissed') {
-              setPickerMode(null);
-              setPickerTask(null);
-              return;
-            }
+            if (Platform.OS === 'android' && event.type === 'dismissed') { setReminderMode(null); setReminderTask(null); return; }
             const picked = selected ?? pendingDate;
-            if (pickerMode === 'date') {
-              setPendingDate(picked);
-              setPickerMode('time');
-              return;
-            }
-            const finalDate = pickerMode === 'datetime' ? picked : combineDateAndTime(pendingDate, picked);
-            const task = pickerTask;
-            setPickerMode(null);
-            setPickerTask(null);
+            if (reminderMode === 'date') { setPendingDate(picked); setReminderMode('time'); return; }
+            const finalDate = reminderMode === 'datetime' ? picked : combineDateAndTime(pendingDate, picked);
+            const task = reminderTask;
+            setReminderMode(null);
+            setReminderTask(null);
             scheduleReminder(task, finalDate);
           }}
         />
       )}
-      <FlatList
-        data={tasks}
-        keyExtractor={item => String(item.id)}
-        renderItem={({ item }) => (
-          <View style={s.card}>
-            <View style={s.cardRow}>
-              <TouchableOpacity onPress={() => toggle(item)}>
-                <Text style={s.checkbox}>{item.completed === 1 ? '✅' : '⬜'}</Text>
-              </TouchableOpacity>
-              <View style={{ flex: 1 }}>
-                <Text style={item.completed === 1 ? s.strike : undefined}>{item.title}</Text>
-                {!!item.completedAt && <Text style={s.muted}>Done {new Date(item.completedAt).toLocaleString()}</Text>}
-                {!!item.reminderAt && <Text style={s.reminder}>⏰ {new Date(item.reminderAt).toLocaleString()}</Text>}
-              </View>
-              <TouchableOpacity onPress={() => bellPress(item)} accessibilityLabel="Set reminder">
-                <Text style={[s.bell, item.reminderAt ? s.bellActive : s.bellMuted]}>⏰</Text>
-              </TouchableOpacity>
-              <Button title={expanded === item.id ? '▲' : '▼'} onPress={() => setExpanded(expanded === item.id ? null : item.id!)} />
-              <Button title="🗑" onPress={() => removeTask(item)} />
-            </View>
-            {expanded === item.id && (
-              <TextInput
-                style={s.textarea}
-                placeholder="Add notes…"
-                multiline
-                value={notesDraft[item.id!] ?? item.notes ?? ''}
-                onChangeText={v => setNotesDraft(prev => ({ ...prev, [item.id!]: v }))}
-                onBlur={async () => {
-                  const v = notesDraft[item.id!] ?? item.notes ?? '';
-                  await db.updateNotes(item.id!, v);
-                  load();
-                }}
-              />
-            )}
-          </View>
-        )}
-      />
-    </SafeAreaView>
+
+      {undo && <UndoBar theme={theme} message={undo.message} onUndo={() => { undo.action(); setUndo(null); }} />}
+    </View>
   );
 }
 
-function BinScreen({ onBack }: { onBack: () => void }) {
+function BinScreen({ theme, onBack }: { theme: Theme; onBack: () => void }) {
+  const insets = useSafeAreaInsets();
   const [pages, setPages] = useState<Page[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const load = async () => {
@@ -257,69 +532,132 @@ function BinScreen({ onBack }: { onBack: () => void }) {
   useEffect(() => { load(); }, []);
 
   return (
-    <SafeAreaView style={s.container}>
+    <View style={[s.screen, { backgroundColor: theme.bg, paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={s.header}>
-        <Button title="‹ Back" onPress={onBack} />
-        <Text style={s.title}>Bin / Trash</Text>
+        <Pressable onPress={onBack} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}>
+          <Text style={[s.binBtn, { color: theme.accent }]}>‹ Back</Text>
+        </Pressable>
+        <Text style={[s.title, { color: theme.text, fontSize: 20 }]}>Bin / Trash</Text>
+        <View style={{ width: 44 }} />
       </View>
-      <Text style={s.section}>Deleted Pages</Text>
+      <Text style={[s.section, { color: theme.muted }]}>DELETED PAGES</Text>
       <FlatList
         data={pages}
         keyExtractor={i => 'p' + i.id}
         renderItem={({ item }) => (
-          <View style={s.cardRow}>
-            <Text style={{ flex: 1 }}>{item.name}</Text>
-            <Button title="Restore" onPress={async () => { await db.restorePage(item.id!); load(); }} />
+          <View style={[s.card, s.cardRow, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <Text style={[s.taskTitle, { color: theme.text, flex: 1 }]} numberOfLines={1}>{item.name}</Text>
+            <Pressable onPress={async () => { await db.restorePage(item.id!); load(); }} style={[s.chip, { backgroundColor: theme.chip }]}>
+              <Text style={[s.chipText, { color: theme.text }]}>Restore</Text>
+            </Pressable>
           </View>
         )}
-        ListEmptyComponent={<Text style={s.muted}>No deleted pages</Text>}
+        ListEmptyComponent={<Text style={[s.muted, { color: theme.muted }]}>No deleted pages</Text>}
       />
-      <Text style={s.section}>Deleted Tasks (Trash)</Text>
+      <Text style={[s.section, { color: theme.muted }]}>DELETED TASKS (TRASH)</Text>
       <FlatList
         data={tasks}
         keyExtractor={i => 't' + i.id}
         renderItem={({ item }) => (
-          <View style={s.cardRow}>
-            <Text style={{ flex: 1 }}>🗑 {item.title}</Text>
-            <Button title="Restore" onPress={async () => { await db.restoreTask(item.id!); load(); }} />
+          <View style={[s.card, s.cardRow, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <Text style={[s.taskTitle, { color: theme.text, flex: 1 }]} numberOfLines={1}>🗑 {item.title}</Text>
+            <Pressable onPress={async () => { await db.restoreTask(item.id!); load(); }} style={[s.chip, { backgroundColor: theme.chip }]}>
+              <Text style={[s.chipText, { color: theme.text }]}>Restore</Text>
+            </Pressable>
           </View>
         )}
-        ListEmptyComponent={<Text style={s.muted}>No deleted tasks</Text>}
+        ListEmptyComponent={<Text style={[s.muted, { color: theme.muted }]}>No deleted tasks</Text>}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
 export default function App() {
+  const scheme = useColorScheme();
+  const [override, setOverride] = useState<ThemeName | null>(null);
+  const themeName: ThemeName = override ?? (scheme === 'dark' ? 'dark' : 'light');
+  const theme = themes[themeName];
+
   const [screen, setScreen] = useState<'home' | 'page' | 'bin'>('home');
   const [currentPage, setCurrentPage] = useState<Page | null>(null);
 
+  const toggleTheme = () => setOverride(themeName === 'dark' ? 'light' : 'dark');
+
+  let content: React.ReactNode;
   if (screen === 'page' && currentPage) {
-    return <PageScreen page={currentPage} onBack={() => setScreen('home')} />;
+    content = <PageScreen theme={theme} themeName={themeName} onToggleTheme={toggleTheme} page={currentPage} onBack={() => setScreen('home')} />;
+  } else if (screen === 'bin') {
+    content = <BinScreen theme={theme} onBack={() => setScreen('home')} />;
+  } else {
+    content = (
+      <HomeScreen
+        theme={theme}
+        themeName={themeName}
+        onToggleTheme={toggleTheme}
+        onOpenPage={p => { setCurrentPage(p); setScreen('page'); }}
+        onOpenBin={() => setScreen('bin')}
+      />
+    );
   }
-  if (screen === 'bin') {
-    return <BinScreen onBack={() => setScreen('home')} />;
-  }
-  return <HomeScreen onOpenPage={p => { setCurrentPage(p); setScreen('page'); }} onOpenBin={() => setScreen('bin')} />;
+
+  return (
+    <SafeAreaProvider>
+      {/* Icons over translucent status bar; Android nav bar button style follows our theme (gesture vs 3-button handled by the OS). */}
+      <StatusBar style={themeName === 'dark' ? 'light' : 'dark'} />
+      <NavigationBar style={themeName === 'dark' ? 'light' : 'dark'} />
+      {content}
+    </SafeAreaProvider>
+  );
 }
 
 const s = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: '#fff' },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
-  title: { fontSize: 24, fontWeight: '700' },
-  section: { fontSize: 18, fontWeight: '600', marginTop: 16, marginBottom: 8 },
-  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 10, marginBottom: 10 },
+  screen: { flex: 1, paddingHorizontal: 16 },
+  fill: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  iconBtn: { paddingHorizontal: 4, paddingVertical: 2 },
+  iconBtnText: { fontSize: 17 },
+  checkbox: {
+    width: 24, height: 24, borderWidth: 2, borderRadius: 6,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  checkboxTick: { fontSize: 15, fontWeight: '800' },
+  metaChip: {
+    borderWidth: 1, borderRadius: 999,
+    paddingHorizontal: 7, paddingVertical: 1, marginRight: 6, marginTop: 4,
+    alignSelf: 'flex-start',
+  },
+  metaChipText: { fontSize: 11, fontWeight: '600' },
+  pageTag: { fontSize: 10, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase' },
+  taskTitle: { fontSize: 15, fontWeight: '600' },
+  metaRow: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 1 },
+  undoBar: {
+    position: 'absolute', left: 12, right: 12, bottom: 12,
+    borderWidth: 1, borderRadius: 12,
+    paddingHorizontal: 14, paddingVertical: 10,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+    elevation: 6,
+  },
+  undoText: { flex: 1, fontSize: 13, fontWeight: '500' },
+  undoAction: { fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
+  header: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginBottom: 12, minHeight: 44,
+  },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  title: { fontSize: 24, fontWeight: '800', letterSpacing: 0.3 },
+  binBtn: { fontSize: 16, fontWeight: '700' },
+  section: { fontSize: 11, fontWeight: '800', letterSpacing: 1.2, marginTop: 14, marginBottom: 6 },
+  muted: { fontSize: 12, marginTop: 4 },
+  input: {
+    borderWidth: 1, borderRadius: 12,
+    paddingHorizontal: 14, paddingVertical: 11, marginBottom: 10, fontSize: 15,
+  },
   row: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  card: { borderWidth: 1, borderColor: '#eee', borderRadius: 10, padding: 12, marginBottom: 10 },
-  cardRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  cardTitle: { fontSize: 16, fontWeight: '600', flex: 1 },
-  muted: { color: '#888', fontSize: 12, marginTop: 4 },
-  strike: { textDecorationLine: 'line-through', color: '#888' },
-  reminder: { color: '#b45309', fontSize: 12, marginTop: 2 },
-  bell: { fontSize: 20 },
-  bellActive: { opacity: 1 },
-  bellMuted: { opacity: 0.35 },
-  checkbox: { fontSize: 20 },
-  textarea: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 10, marginTop: 8, minHeight: 90, textAlignVertical: 'top' },
+  addBtn: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  addBtnText: { fontSize: 22, fontWeight: '700' },
+  chipsRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  chip: { borderRadius: 999, paddingHorizontal: 14, paddingVertical: 7 },
+  chipText: { fontSize: 13, fontWeight: '700' },
+  card: { borderWidth: 1, borderRadius: 14, padding: 12, marginBottom: 10 },
+  cardRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  textarea: { borderWidth: 1, borderRadius: 10, padding: 10, marginTop: 8, minHeight: 90, textAlignVertical: 'top', fontSize: 14 },
 });
