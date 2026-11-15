@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, FlatList, TextInput, StyleSheet, Alert, Pressable, useColorScheme, Platform } from 'react-native';
+import { View, Text, FlatList, TextInput, StyleSheet, Alert, Pressable, useColorScheme } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationBar } from 'expo-navigation-bar';
 import { Ionicons } from '@expo/vector-icons';
-import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import WhenSheet from './src/WhenSheet';
 import { db, Folder, Task, TaskWithFolder, Recurrence, initDb } from './src/db';
 import { themes, Theme, ThemeName } from './src/theme';
 import { initNotifications, requestReminderPermission, scheduleTaskReminder, cancelTaskReminder } from './src/notifications';
@@ -28,12 +28,6 @@ function fmtDue(ts: number): { label: string; overdue: boolean } {
   const d = new Date(ts);
   const label = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
   return { label, overdue: diff < 0 };
-}
-
-function combineDateAndTime(datePart: Date, timePart: Date): Date {
-  const d = new Date(datePart);
-  d.setHours(timePart.getHours(), timePart.getMinutes(), 0, 0);
-  return d;
 }
 
 function tomorrowMorning9(): Date {
@@ -368,10 +362,7 @@ function FolderScreen({ theme, themeName, onToggleTheme, folder, onBack }: {
   const [newTask, setNewTask] = useState('');
   const [expanded, setExpanded] = useState<number | null>(null);
   const [notesDraft, setNotesDraft] = useState<Record<number, string>>({});
-  const [reminderTask, setReminderTask] = useState<Task | null>(null);
-  const [reminderMode, setReminderMode] = useState<'date' | 'time' | 'datetime' | null>(null);
-  const [dueTask, setDueTask] = useState<Task | null>(null);
-  const [pendingDate, setPendingDate] = useState<Date>(new Date());
+  const [whenSheet, setWhenSheet] = useState<{ task: Task; mode: 'date' | 'datetime'; purpose: 'reminder' | 'due'; initial?: Date } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [undo, setUndo] = useState<{ message: string; action: () => void } | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -443,7 +434,7 @@ function FolderScreen({ theme, themeName, onToggleTheme, folder, onBack }: {
       { text: 'Tomorrow 9:00 AM', onPress: () => scheduleReminder(t, tomorrowMorning9()) },
       {
         text: 'Pick date & time…',
-        onPress: () => { setPendingDate(new Date(Date.now() + 3600_000)); setReminderTask(t); setReminderMode(Platform.OS === 'ios' ? 'datetime' : 'date'); },
+        onPress: () => setWhenSheet({ task: t, mode: 'datetime', purpose: 'reminder', initial: t.reminderAt ? new Date(t.reminderAt) : undefined }),
       },
     ];
     if (t.reminderAt) options.push({ text: 'Clear reminder', onPress: () => clearReminder(t) });
@@ -454,14 +445,13 @@ function FolderScreen({ theme, themeName, onToggleTheme, folder, onBack }: {
   /* Due date */
   const duePress = (t: Task) => {
     if (t.dueAt) {
-      Alert.alert('Due date', `Currently due ${new Date(t.dueAt).toLocaleString()}`, [
-        { text: 'Change…', onPress: () => { setPendingDate(new Date(t.dueAt!)); setDueTask(t); } },
+      Alert.alert('Due date', `Currently due ${new Date(t.dueAt).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}`, [
+        { text: 'Change…', onPress: () => setWhenSheet({ task: t, mode: 'date', purpose: 'due', initial: new Date(t.dueAt!) }) },
         { text: 'Clear', onPress: async () => { await db.setDue(t.id!, null); load(); } },
         { text: 'Cancel', style: 'cancel' },
       ]);
     } else {
-      setPendingDate(new Date());
-      setDueTask(t);
+      setWhenSheet({ task: t, mode: 'date', purpose: 'due' });
     }
   };
 
@@ -552,41 +542,22 @@ function FolderScreen({ theme, themeName, onToggleTheme, folder, onBack }: {
       <FlatList data={tasks} keyExtractor={item => String(item.id)} renderItem={renderTask} style={{ marginTop: 12 }}
         ListEmptyComponent={<Text style={[s.muted, { color: theme.muted }]}>No tasks yet. Add one above.</Text>} />
 
-      {/* Due-date picker (single step) */}
-      {dueTask && (
-        <DateTimePicker
-          value={pendingDate}
-          mode="date"
-          minimumDate={new Date(Date.now() - 365 * 86400000)}
-          onChange={(event: DateTimePickerEvent, selected?: Date) => {
-            if (Platform.OS === 'android' && event.type === 'dismissed') { setDueTask(null); return; }
-            const picked = selected ?? pendingDate;
-            const t = dueTask;
-            setDueTask(null);
-            db.setDue(t.id!, picked.getTime()).then(load);
-          }}
-        />
-      )}
-
-      {/* Reminder picker (Android: date then time; iOS: datetime) */}
-      {reminderMode && reminderTask && (
-        <DateTimePicker
-          value={pendingDate}
-          mode={reminderMode}
-          minimumDate={new Date()}
-          is24Hour
-          onChange={(event: DateTimePickerEvent, selected?: Date) => {
-            if (Platform.OS === 'android' && event.type === 'dismissed') { setReminderMode(null); setReminderTask(null); return; }
-            const picked = selected ?? pendingDate;
-            if (reminderMode === 'date') { setPendingDate(picked); setReminderMode('time'); return; }
-            const finalDate = reminderMode === 'datetime' ? picked : combineDateAndTime(pendingDate, picked);
-            const task = reminderTask;
-            setReminderMode(null);
-            setReminderTask(null);
-            scheduleReminder(task, finalDate);
-          }}
-        />
-      )}
+      <WhenSheet
+        theme={theme}
+        visible={!!whenSheet}
+        mode={whenSheet?.mode ?? 'datetime'}
+        title={whenSheet?.purpose === 'reminder' ? 'Remind me at' : 'Due on'}
+        initial={whenSheet?.initial}
+        minimum={whenSheet?.purpose === 'reminder' ? new Date() : undefined}
+        onCancel={() => setWhenSheet(null)}
+        onConfirm={(date) => {
+          const sheet = whenSheet;
+          setWhenSheet(null);
+          if (!sheet) return;
+          if (sheet.purpose === 'reminder') { scheduleReminder(sheet.task, date); return; }
+          db.setDue(sheet.task.id!, startOfDay(date.getTime())).then(load);
+        }}
+      />
 
       <DeleteFolderModal
         theme={theme}
