@@ -34,7 +34,7 @@ export default function Bin() {
   }, []);
 
   const restorePage = async (page: Page) => {
-    await db.pages.update(page.id!, { isDeleted: false });
+    await db.pages.update(page.id!, { isDeleted: 0 });
     await db.addHistoryEntry("restore_page", `Restored page: ${page.name}`);
     loadDeletedItems();
 
@@ -45,7 +45,7 @@ export default function Bin() {
   };
 
   const restoreTask = async (task: Task) => {
-    await db.tasks.update(task.id!, { isDeleted: false });
+    await db.tasks.update(task.id!, { isDeleted: 0 });
     await db.addHistoryEntry("restore_task", `Restored task: ${task.title}`);
     loadDeletedItems();
 

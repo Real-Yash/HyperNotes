@@ -29,16 +29,17 @@ export default function Home() {
   }, []);
 
   const createPage = async () => {
-    if (!newPageName.trim()) return;
+    const name = newPageName.trim();
+    if (!name) return;
 
     try {
       await db.pages.add({
-        name: newPageName,
+        name,
         createdAt: new Date(),
         isDeleted: 0
       });
 
-      await db.addHistoryEntry("create_page", `Created page: ${newPageName}`);
+      await db.addHistoryEntry("create_page", `Created page: ${name}`);
       setNewPageName("");
       setDialogOpen(false);
       loadPages();

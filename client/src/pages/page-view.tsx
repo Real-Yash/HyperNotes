@@ -14,8 +14,13 @@ export default function PageView() {
 
   const loadPage = async () => {
     if (!params?.id) return;
-    
-    const pageData = await db.pages.get(parseInt(params.id));
+    const pageId = parseInt(params.id, 10);
+    if (Number.isNaN(pageId)) {
+      navigate("/");
+      return;
+    }
+
+    const pageData = await db.pages.get(pageId);
     if (!pageData) {
       navigate("/");
       return;
@@ -24,7 +29,7 @@ export default function PageView() {
 
     const pageTasks = await db.tasks
       .where("pageId")
-      .equals(parseInt(params.id))
+      .equals(pageId)
       .and(task => !task.isDeleted)
       .toArray();
     setTasks(pageTasks);

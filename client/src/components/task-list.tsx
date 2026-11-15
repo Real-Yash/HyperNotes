@@ -79,15 +79,16 @@ export function TaskList({ pageId, tasks, onUpdate }: TaskListProps) {
     });
   };
 
-  const updateNotes = async (taskId: number, notes: string) => {
+  const updateNotes = (taskId: number, notes: string) => {
+    setEditingNotes(prev => ({
+      ...prev,
+      [taskId]: notes
+    }));
+  };
+
+  const saveNotes = async (taskId: number) => {
     try {
-      if (taskId === undefined) return;
-
-      setEditingNotes(prev => ({
-        ...prev,
-        [taskId]: notes
-      }));
-
+      const notes = editingNotes[taskId] ?? "";
       await db.tasks.update(taskId, { notes });
       await db.addHistoryEntry("update_notes", `Updated notes for task`);
       onUpdate();
@@ -189,6 +190,7 @@ export function TaskList({ pageId, tasks, onUpdate }: TaskListProps) {
                   placeholder="Add notes..."
                   value={editingNotes[task.id!] || ""}
                   onChange={(e) => updateNotes(task.id!, e.target.value)}
+                  onBlur={() => saveNotes(task.id!)}
                   className="w-full mt-2 relative z-10"
                   rows={4}
                 />
