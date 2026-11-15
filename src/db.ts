@@ -11,8 +11,18 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
 
 export async function initDb(): Promise<void> {
   const db = await getDb();
+
+  // v3: rename legacy `pages` table to `folders` (data preserved).
+  const tables = await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table'",
+  );
+  const tableNames = tables.map(t => t.name);
+  if (tableNames.includes('pages') && !tableNames.includes('folders')) {
+    await db.execAsync('ALTER TABLE pages RENAME TO folders');
+  }
+
   await db.execAsync(`
-    CREATE TABLE IF NOT EXISTS pages (
+    CREATE TABLE IF NOT EXISTS folders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       createdAt INTEGER NOT NULL,
@@ -36,7 +46,9 @@ export async function initDb(): Promise<void> {
     );
   `);
 
-  // ---- v2 migrations (idempotent) ----
+  // ---- v2/v3 migrations (idempotent) ----
+  // tasks.pageId keeps its legacy column name to avoid a destructive copy;
+  // it references folders.id.
   const taskCols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(tasks)`);
   const colNames = taskCols.map(c => c.name);
   if (!colNames.includes('reminderAt')) {
@@ -49,6 +61,7 @@ export async function initDb(): Promise<void> {
     await db.execAsync(`ALTER TABLE tasks ADD COLUMN recurrence TEXT`);
   }
   await db.execAsync(`CREATE INDEX IF NOT EXISTS idx_tasks_dueAt ON tasks(dueAt)`);
+  await db.execAsync(`CREATE INDEX IF NOT EXISTS idx_tasks_pageId ON tasks(pageId)`);
 
   // ---- FTS5 full-text search over tasks ----
   await db.execAsync(`
@@ -76,7 +89,7 @@ export async function initDb(): Promise<void> {
   }
 }
 
-export interface Page {
+export interface Folder {
   id?: number;
   name: string;
   createdAt: Date | number;
@@ -99,8 +112,8 @@ export interface Task {
   recurrence?: Recurrence | null;
 }
 
-export interface TaskWithPage extends Task {
-  pageName: string;
+export interface TaskWithFolder extends Task {
+  folderName: string;
 }
 
 function addInterval(ts: number, recurrence: Recurrence): number {
@@ -126,40 +139,51 @@ function escapeFts(query: string): string {
 }
 
 export const db = {
-  async getPageById(id: number): Promise<Page | null> {
+  async getFolderById(id: number): Promise<Folder | null> {
     await initDb();
     const d = await getDb();
-    return (await d.getFirstAsync<any>('SELECT * FROM pages WHERE id = ?', [id])) ?? null;
+    return (await d.getFirstAsync<any>('SELECT * FROM folders WHERE id = ?', [id])) ?? null;
   },
-  async getPages(deleted: boolean): Promise<Page[]> {
+  async getFolders(deleted: boolean): Promise<Folder[]> {
     await initDb();
     const d = await getDb();
     const v = deleted ? 1 : 0;
-    return d.getAllAsync<any>('SELECT * FROM pages WHERE isDeleted = ? ORDER BY createdAt DESC', [v]);
+    return d.getAllAsync<any>('SELECT * FROM folders WHERE isDeleted = ? ORDER BY createdAt DESC', [v]);
   },
-  async createPage(name: string) {
+  /** Open-task counts per folder, for tiles. */
+  async getFolderCounts(): Promise<Record<number, number>> {
+    await initDb();
+    const d = await getDb();
+    const rows = await d.getAllAsync<{ pageId: number; n: number }>(
+      'SELECT pageId, COUNT(*) AS n FROM tasks WHERE isDeleted = 0 AND completed = 0 GROUP BY pageId',
+    );
+    const out: Record<number, number> = {};
+    for (const r of rows) out[r.pageId] = r.n;
+    return out;
+  },
+  async createFolder(name: string) {
     await initDb();
     const d = await getDb();
     const n = name.trim();
     if (!n) return;
-    await d.runAsync('INSERT INTO pages (name, createdAt, isDeleted) VALUES (?, ?, 0)', [n, Date.now()]);
-    await log('create_page', 'Created page: ' + n);
+    await d.runAsync('INSERT INTO folders (name, createdAt, isDeleted) VALUES (?, ?, 0)', [n, Date.now()]);
+    await log('create_folder', 'Created folder: ' + n);
   },
-  async deletePage(id: number) {
+  async deleteFolder(id: number) {
     const d = await getDb();
-    await d.runAsync('UPDATE pages SET isDeleted = 1 WHERE id = ?', [id]);
-    await log('delete_page', 'Deleted page id:' + id);
+    await d.runAsync('UPDATE folders SET isDeleted = 1 WHERE id = ?', [id]);
+    await log('delete_folder', 'Deleted folder id:' + id);
   },
-  async restorePage(id: number) {
+  async restoreFolder(id: number) {
     const d = await getDb();
-    await d.runAsync('UPDATE pages SET isDeleted = 0 WHERE id = ?', [id]);
-    await log('restore_page', 'Restored page id:' + id);
+    await d.runAsync('UPDATE folders SET isDeleted = 0 WHERE id = ?', [id]);
+    await log('restore_folder', 'Restored folder id:' + id);
   },
 
-  async getTasks(pageId: number): Promise<Task[]> {
+  async getTasks(folderId: number): Promise<Task[]> {
     await initDb();
     const d = await getDb();
-    return d.getAllAsync<any>('SELECT * FROM tasks WHERE pageId = ? AND isDeleted = 0 ORDER BY completed ASC, dueAt IS NULL, dueAt ASC, createdAt DESC', [pageId]);
+    return d.getAllAsync<any>('SELECT * FROM tasks WHERE pageId = ? AND isDeleted = 0 ORDER BY completed ASC, dueAt IS NULL, dueAt ASC, createdAt DESC', [folderId]);
   },
   async getDeletedTasks(): Promise<Task[]> {
     await initDb();
@@ -167,17 +191,16 @@ export const db = {
     return d.getAllAsync<any>('SELECT * FROM tasks WHERE isDeleted = 1 ORDER BY createdAt DESC');
   },
 
-  /** Cross-page due lists. `view`: 'today' = due today or overdue; 'upcoming' = next 7 days. */
-  async getDueTasks(view: 'today' | 'upcoming'): Promise<TaskWithPage[]> {
+  /** Cross-folder due lists. `view`: 'today' = due today or overdue; 'upcoming' = next 7 days. */
+  async getDueTasks(view: 'today' | 'upcoming'): Promise<TaskWithFolder[]> {
     await initDb();
     const d = await getDb();
-    const now = Date.now();
     const endOfToday = new Date();
     endOfToday.setHours(23, 59, 59, 999);
     const end = endOfToday.getTime();
     if (view === 'today') {
       return d.getAllAsync<any>(
-        `SELECT t.*, p.name AS pageName FROM tasks t JOIN pages p ON p.id = t.pageId
+        `SELECT t.*, f.name AS folderName FROM tasks t JOIN folders f ON f.id = t.pageId
          WHERE t.isDeleted = 0 AND t.completed = 0 AND t.dueAt IS NOT NULL AND t.dueAt <= ?
          ORDER BY t.dueAt ASC`,
         [end],
@@ -186,42 +209,42 @@ export const db = {
     const week = new Date(end);
     week.setDate(week.getDate() + 7);
     return d.getAllAsync<any>(
-      `SELECT t.*, p.name AS pageName FROM tasks t JOIN pages p ON p.id = t.pageId
+      `SELECT t.*, f.name AS folderName FROM tasks t JOIN folders f ON f.id = t.pageId
        WHERE t.isDeleted = 0 AND t.completed = 0 AND t.dueAt IS NOT NULL AND t.dueAt > ? AND t.dueAt <= ?
        ORDER BY t.dueAt ASC`,
       [end, week.getTime()],
     );
   },
 
-  /** Full-text search across pages' tasks (titles + notes), best match first. */
-  async searchTasks(query: string, limit = 50): Promise<TaskWithPage[]> {
+  /** Full-text search across tasks (titles + notes), best match first. */
+  async searchTasks(query: string, limit = 50): Promise<TaskWithFolder[]> {
     await initDb();
     const q = escapeFts(query);
     if (!q) return [];
     const d = await getDb();
     return d.getAllAsync<any>(
-      `SELECT t.*, p.name AS pageName
+      `SELECT t.*, f.name AS folderName
        FROM tasks_fts JOIN tasks t ON t.id = tasks_fts.rowid
-       JOIN pages p ON p.id = t.pageId
-       WHERE tasks_fts MATCH ? AND t.isDeleted = 0 AND p.isDeleted = 0
+       JOIN folders f ON f.id = t.pageId
+       WHERE tasks_fts MATCH ? AND t.isDeleted = 0 AND f.isDeleted = 0
        ORDER BY rank LIMIT ?`,
       [q, limit],
     );
   },
 
-  async searchPages(query: string): Promise<Page[]> {
+  async searchFolders(query: string): Promise<Folder[]> {
     await initDb();
     const d = await getDb();
     const like = `%${query.trim()}%`;
-    return d.getAllAsync<any>('SELECT * FROM pages WHERE isDeleted = 0 AND name LIKE ? ORDER BY createdAt DESC', [like]);
+    return d.getAllAsync<any>('SELECT * FROM folders WHERE isDeleted = 0 AND name LIKE ? ORDER BY createdAt DESC', [like]);
   },
 
-  async createTask(pageId: number, title: string) {
+  async createTask(folderId: number, title: string) {
     await initDb();
     const d = await getDb();
     const t = title.trim();
     if (!t) return;
-    await d.runAsync('INSERT INTO tasks (pageId, title, notes, completed, createdAt, isDeleted) VALUES (?, ?, "", 0, ?, 0)', [pageId, t, Date.now()]);
+    await d.runAsync('INSERT INTO tasks (pageId, title, notes, completed, createdAt, isDeleted) VALUES (?, ?, "", 0, ?, 0)', [folderId, t, Date.now()]);
     await log('add_task', 'Added task: ' + t);
   },
 
@@ -246,7 +269,7 @@ export const db = {
         await log('recur_spawn', `Next ${row.recurrence} occurrence of "${row.title}" due ${new Date(next).toISOString()}`);
       }
     } else {
-      await d.runAsync('UPDATE tasks SET completed = 0, completedAt = NULL WHERE id = ?', [id,]);
+      await d.runAsync('UPDATE tasks SET completed = 0, completedAt = NULL WHERE id = ?', [id]);
     }
     await log('toggle_task', (now === 1 ? 'Completed' : 'Uncompleted') + ' task id:' + id);
   },

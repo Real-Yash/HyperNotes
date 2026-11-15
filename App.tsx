@@ -4,7 +4,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { StatusBar } from 'expo-status-bar';
 import { NavigationBar } from 'expo-navigation-bar';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { db, Page, Task, TaskWithPage, Recurrence, initDb } from './src/db';
+import { db, Folder, Task, TaskWithFolder, Recurrence, initDb } from './src/db';
 import { themes, Theme, ThemeName } from './src/theme';
 import { initNotifications, requestReminderPermission, scheduleTaskReminder, cancelTaskReminder } from './src/notifications';
 
@@ -86,17 +86,17 @@ function Checkbox({ theme, completed, onPress }: { theme: Theme; completed: bool
   );
 }
 
-/* ---------- Cross-page task row (search & smart views) ---------- */
+/* ---------- Cross-folder task row (search & smart views) ---------- */
 
 function CrossTaskRow({ theme, task, onToggle, onOpen }: {
-  theme: Theme; task: TaskWithPage; onToggle: (t: TaskWithPage) => void; onOpen: (t: TaskWithPage) => void;
+  theme: Theme; task: TaskWithFolder; onToggle: (t: TaskWithFolder) => void; onOpen: (t: TaskWithFolder) => void;
 }) {
   return (
     <Pressable onPress={() => onOpen(task)} style={[s.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
       <View style={s.cardRow}>
         <Checkbox theme={theme} completed={task.completed === 1} onPress={() => onToggle(task)} />
         <View style={{ flex: 1 }}>
-          <Text style={[s.pageTag, { color: theme.muted }]} numberOfLines={1}>{task.pageName}</Text>
+          <Text style={[s.folderTag, { color: theme.muted }]} numberOfLines={1}>{task.folderName}</Text>
           <Text style={[s.taskTitle, { color: theme.text }]} numberOfLines={2}>{task.title}</Text>
           <View style={s.metaRow}>
             {!!task.dueAt && (() => {
@@ -114,18 +114,19 @@ function CrossTaskRow({ theme, task, onToggle, onOpen }: {
 
 /* ---------- Screens ---------- */
 
-function HomeScreen({ theme, themeName, onToggleTheme, onOpenPage, onOpenBin }: {
+function HomeScreen({ theme, themeName, onToggleTheme, onOpenFolder, onOpenBin }: {
   theme: Theme; themeName: ThemeName; onToggleTheme: () => void;
-  onOpenPage: (p: Page) => void; onOpenBin: () => void;
+  onOpenFolder: (p: Folder) => void; onOpenBin: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const [pages, setPages] = useState<Page[]>([]);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [counts, setCounts] = useState<Record<number, number>>({});
   const [newName, setNewName] = useState('');
   const [query, setQuery] = useState('');
   const [view, setView] = useState<'all' | 'today' | 'upcoming'>('all');
-  const [dueTasks, setDueTasks] = useState<TaskWithPage[]>([]);
-  const [foundTasks, setFoundTasks] = useState<TaskWithPage[]>([]);
-  const [foundPages, setFoundPages] = useState<Page[]>([]);
+  const [dueTasks, setDueTasks] = useState<TaskWithFolder[]>([]);
+  const [foundTasks, setFoundTasks] = useState<TaskWithFolder[]>([]);
+  const [foundFolders, setFoundFolders] = useState<Folder[]>([]);
   const [ready, setReady] = useState(false);
   const [undo, setUndo] = useState<{ message: string; action: () => void } | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -138,7 +139,8 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenPage, onOpenBin }: 
 
   const load = async () => {
     await initDb();
-    setPages(await db.getPages(false));
+    setFolders(await db.getFolders(false));
+    setCounts(await db.getFolderCounts());
     setReady(true);
   };
   useEffect(() => { load(); }, []);
@@ -152,10 +154,10 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenPage, onOpenBin }: 
   // Debounced FTS search
   useEffect(() => {
     const q = query.trim();
-    if (!q) { setFoundTasks([]); setFoundPages([]); return; }
+    if (!q) { setFoundTasks([]); setFoundFolders([]); return; }
     const t = setTimeout(async () => {
       setFoundTasks(await db.searchTasks(q));
-      setFoundPages(await db.searchPages(q));
+      setFoundFolders(await db.searchFolders(q));
     }, 250);
     return () => clearTimeout(t);
   }, [query]);
@@ -165,17 +167,17 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenPage, onOpenBin }: 
   const create = async () => {
     const name = newName.trim();
     if (!name) return;
-    await db.createPage(name);
+    await db.createFolder(name);
     setNewName('');
     refreshAll();
   };
 
-  const removePage = (p: Page) => {
-    db.deletePage(p.id!).then(refreshAll);
-    showUndo(`"${p.name}" moved to Bin`, () => { db.restorePage(p.id!).then(refreshAll); });
+  const removeFolder = (p: Folder) => {
+    db.deleteFolder(p.id!).then(refreshAll);
+    showUndo(`"${p.name}" moved to Bin`, () => { db.restoreFolder(p.id!).then(refreshAll); });
   };
 
-  const toggleTask = async (t: Task | TaskWithPage) => {
+  const toggleTask = async (t: Task | TaskWithFolder) => {
     if (t.completed === 0 && t.id) await cancelTaskReminder(t.id);
     await db.toggleTask(t.id!);
     refreshAll();
@@ -184,9 +186,9 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenPage, onOpenBin }: 
     }
   };
 
-  const openTaskPage = async (t: TaskWithPage) => {
-    const page = await db.getPageById(t.pageId);
-    if (page) onOpenPage(page);
+  const openTaskFolder = async (t: TaskWithFolder) => {
+    const folder = await db.getFolderById(t.pageId);
+    if (folder) onOpenFolder(folder);
   };
 
   const searching = query.trim().length > 0;
@@ -217,7 +219,7 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenPage, onOpenBin }: 
 
       <TextInput
         style={[s.input, { backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
-        placeholder="Search tasks & pages…"
+        placeholder="Search tasks & folders…"
         placeholderTextColor={theme.muted}
         value={query}
         onChangeText={setQuery}
@@ -240,25 +242,25 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenPage, onOpenBin }: 
           data={foundTasks}
           keyExtractor={item => 't' + item.id}
           keyboardShouldPersistTaps="handled"
-          ListHeaderComponent={foundPages.length > 0 ? (
+          ListHeaderComponent={foundFolders.length > 0 ? (
             <View style={{ marginBottom: 8 }}>
-              <Text style={[s.section, { color: theme.muted }]}>PAGES</Text>
-              {foundPages.map(p => (
-                <Pressable key={p.id} onPress={() => onOpenPage(p)} style={[s.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+              <Text style={[s.section, { color: theme.muted }]}>FOLDERS</Text>
+              {foundFolders.map(p => (
+                <Pressable key={p.id} onPress={() => onOpenFolder(p)} style={[s.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
                   <Text style={[s.taskTitle, { color: theme.text }]}>📄 {p.name}</Text>
                 </Pressable>
               ))}
               <Text style={[s.section, { color: theme.muted, marginTop: 8 }]}>TASKS</Text>
             </View>
           ) : undefined}
-          renderItem={({ item }) => <CrossTaskRow theme={theme} task={item} onToggle={toggleTask} onOpen={openTaskPage} />}
-          ListEmptyComponent={foundPages.length === 0 ? <Text style={[s.muted, { color: theme.muted }]}>No matches for “{query.trim()}”.</Text> : undefined}
+          renderItem={({ item }) => <CrossTaskRow theme={theme} task={item} onToggle={toggleTask} onOpen={openTaskFolder} />}
+          ListEmptyComponent={foundFolders.length === 0 ? <Text style={[s.muted, { color: theme.muted }]}>No matches for “{query.trim()}”.</Text> : undefined}
         />
       ) : view !== 'all' ? (
         <FlatList
           data={dueTasks}
           keyExtractor={item => 'd' + item.id}
-          renderItem={({ item }) => <CrossTaskRow theme={theme} task={item} onToggle={toggleTask} onOpen={openTaskPage} />}
+          renderItem={({ item }) => <CrossTaskRow theme={theme} task={item} onToggle={toggleTask} onOpen={openTaskFolder} />}
           ListEmptyComponent={
             <Text style={[s.muted, { color: theme.muted }]}>
               {view === 'today' ? 'Nothing due today or overdue. Nice.' : 'Nothing due in the next 7 days.'}
@@ -270,30 +272,35 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenPage, onOpenBin }: 
           <View style={s.row}>
             <TextInput
               style={[s.input, { flex: 1, marginBottom: 0, backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
-              placeholder="New page name"
+              placeholder="New folder name"
               placeholderTextColor={theme.muted}
               value={newName}
               onChangeText={setNewName}
               onSubmitEditing={create}
             />
-            <Pressable onPress={create} style={[s.addBtn, { backgroundColor: theme.accent }]} accessibilityLabel="Create page">
+            <Pressable onPress={create} style={[s.addBtn, { backgroundColor: theme.accent }]} accessibilityLabel="Create folder">
               <Text style={[s.addBtnText, { color: theme.onAccent }]}>＋</Text>
             </Pressable>
           </View>
           <FlatList
-            data={pages}
+            data={folders}
             keyExtractor={item => String(item.id)}
-            style={{ marginTop: 12 }}
+            numColumns={2}
+            columnWrapperStyle={s.tileRow}
+            contentContainerStyle={{ gap: 12, marginTop: 12 }}
             renderItem={({ item }) => (
-              <Pressable onPress={() => onOpenPage(item)} style={[s.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
-                <View style={s.cardRow}>
-                  <Text style={[s.taskTitle, { color: theme.text, flex: 1 }]} numberOfLines={1}>{item.name}</Text>
-                  <IconBtn theme={theme} label="🗑" onPress={() => removePage(item)} accessibilityLabel="Move to Bin" />
+              <Pressable onPress={() => onOpenFolder(item)} style={[s.tile, { backgroundColor: theme.card, borderColor: theme.border }]}>
+                <View style={s.tileTopRow}>
+                  <Text style={s.tileIcon}>🗂️</Text>
+                  <IconBtn theme={theme} label="🗑" onPress={() => removeFolder(item)} accessibilityLabel="Move folder to Bin" />
                 </View>
-                <Text style={[s.muted, { color: theme.muted }]}>Created {new Date(item.createdAt).toLocaleDateString()}</Text>
+                <View>
+                  <Text style={[s.tileName, { color: theme.text }]} numberOfLines={2}>{item.name}</Text>
+                  <Text style={[s.tileMeta, { color: theme.muted }]}>{counts[item.id!] ?? 0} open task{(counts[item.id!] ?? 0) === 1 ? '' : 's'}</Text>
+                </View>
               </Pressable>
             )}
-            ListEmptyComponent={<Text style={[s.muted, { color: theme.muted }]}>No pages yet. Create one above.</Text>}
+            ListEmptyComponent={<Text style={[s.muted, { color: theme.muted }]}>No folders yet. Create one above.</Text>}
           />
         </>
       )}
@@ -303,8 +310,8 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenPage, onOpenBin }: 
   );
 }
 
-function PageScreen({ theme, themeName, onToggleTheme, page, onBack }: {
-  theme: Theme; themeName: ThemeName; onToggleTheme: () => void; page: Page; onBack: () => void;
+function FolderScreen({ theme, themeName, onToggleTheme, folder, onBack }: {
+  theme: Theme; themeName: ThemeName; onToggleTheme: () => void; folder: Folder; onBack: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -318,7 +325,7 @@ function PageScreen({ theme, themeName, onToggleTheme, page, onBack }: {
   const [undo, setUndo] = useState<{ message: string; action: () => void } | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = async () => setTasks(await db.getTasks(page.id!));
+  const load = async () => setTasks(await db.getTasks(folder.id!));
   useEffect(() => { load(); }, []);
 
   const showUndo = (message: string, action: () => void) => {
@@ -330,7 +337,7 @@ function PageScreen({ theme, themeName, onToggleTheme, page, onBack }: {
   const addTask = async () => {
     const title = newTask.trim();
     if (!title) return;
-    await db.createTask(page.id!, title);
+    await db.createTask(folder.id!, title);
     setNewTask('');
     load();
   };
@@ -459,7 +466,7 @@ function PageScreen({ theme, themeName, onToggleTheme, page, onBack }: {
         <Pressable onPress={onBack} hitSlop={8} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}>
           <Text style={[s.binBtn, { color: theme.accent }]}>‹ Back</Text>
         </Pressable>
-        <Text style={[s.title, { color: theme.text, fontSize: 20 }]} numberOfLines={1}>{page.name}</Text>
+        <Text style={[s.title, { color: theme.text, fontSize: 20 }]} numberOfLines={1}>{folder.name}</Text>
         <IconBtn theme={theme} label={themeName === 'dark' ? '☀️' : '🌙'} onPress={onToggleTheme} accessibilityLabel="Toggle theme" />
       </View>
 
@@ -523,10 +530,10 @@ function PageScreen({ theme, themeName, onToggleTheme, page, onBack }: {
 
 function BinScreen({ theme, onBack }: { theme: Theme; onBack: () => void }) {
   const insets = useSafeAreaInsets();
-  const [pages, setPages] = useState<Page[]>([]);
+  const [folders, setFolders] = useState<Folder[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const load = async () => {
-    setPages(await db.getPages(true));
+    setFolders(await db.getFolders(true));
     setTasks(await db.getDeletedTasks());
   };
   useEffect(() => { load(); }, []);
@@ -540,19 +547,19 @@ function BinScreen({ theme, onBack }: { theme: Theme; onBack: () => void }) {
         <Text style={[s.title, { color: theme.text, fontSize: 20 }]}>Bin / Trash</Text>
         <View style={{ width: 44 }} />
       </View>
-      <Text style={[s.section, { color: theme.muted }]}>DELETED PAGES</Text>
+      <Text style={[s.section, { color: theme.muted }]}>DELETED FOLDERS</Text>
       <FlatList
-        data={pages}
+        data={folders}
         keyExtractor={i => 'p' + i.id}
         renderItem={({ item }) => (
           <View style={[s.card, s.cardRow, { backgroundColor: theme.card, borderColor: theme.border }]}>
             <Text style={[s.taskTitle, { color: theme.text, flex: 1 }]} numberOfLines={1}>{item.name}</Text>
-            <Pressable onPress={async () => { await db.restorePage(item.id!); load(); }} style={[s.chip, { backgroundColor: theme.chip }]}>
+            <Pressable onPress={async () => { await db.restoreFolder(item.id!); load(); }} style={[s.chip, { backgroundColor: theme.chip }]}>
               <Text style={[s.chipText, { color: theme.text }]}>Restore</Text>
             </Pressable>
           </View>
         )}
-        ListEmptyComponent={<Text style={[s.muted, { color: theme.muted }]}>No deleted pages</Text>}
+        ListEmptyComponent={<Text style={[s.muted, { color: theme.muted }]}>No deleted folders</Text>}
       />
       <Text style={[s.section, { color: theme.muted }]}>DELETED TASKS (TRASH)</Text>
       <FlatList
@@ -578,14 +585,14 @@ export default function App() {
   const themeName: ThemeName = override ?? (scheme === 'dark' ? 'dark' : 'light');
   const theme = themes[themeName];
 
-  const [screen, setScreen] = useState<'home' | 'page' | 'bin'>('home');
-  const [currentPage, setCurrentPage] = useState<Page | null>(null);
+  const [screen, setScreen] = useState<'home' | 'folder' | 'bin'>('home');
+  const [currentFolder, setCurrentFolder] = useState<Folder | null>(null);
 
   const toggleTheme = () => setOverride(themeName === 'dark' ? 'light' : 'dark');
 
   let content: React.ReactNode;
-  if (screen === 'page' && currentPage) {
-    content = <PageScreen theme={theme} themeName={themeName} onToggleTheme={toggleTheme} page={currentPage} onBack={() => setScreen('home')} />;
+  if (screen === 'folder' && currentFolder) {
+    content = <FolderScreen theme={theme} themeName={themeName} onToggleTheme={toggleTheme} folder={currentFolder} onBack={() => setScreen('home')} />;
   } else if (screen === 'bin') {
     content = <BinScreen theme={theme} onBack={() => setScreen('home')} />;
   } else {
@@ -594,7 +601,7 @@ export default function App() {
         theme={theme}
         themeName={themeName}
         onToggleTheme={toggleTheme}
-        onOpenPage={p => { setCurrentPage(p); setScreen('page'); }}
+        onOpenFolder={p => { setCurrentFolder(p); setScreen('folder'); }}
         onOpenBin={() => setScreen('bin')}
       />
     );
@@ -612,6 +619,15 @@ export default function App() {
 
 const s = StyleSheet.create({
   screen: { flex: 1, paddingHorizontal: 16 },
+  tileRow: { gap: 12 },
+  tile: {
+    flex: 1, aspectRatio: 1.25, borderWidth: 1, borderRadius: 18,
+    padding: 14, justifyContent: 'space-between',
+  },
+  tileTopRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+  tileIcon: { fontSize: 30 },
+  tileName: { fontSize: 16, fontWeight: '800', letterSpacing: 0.2 },
+  tileMeta: { fontSize: 11, fontWeight: '600', marginTop: 2 },
   fill: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   iconBtn: { paddingHorizontal: 4, paddingVertical: 2 },
   iconBtnText: { fontSize: 17 },
@@ -626,7 +642,7 @@ const s = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   metaChipText: { fontSize: 11, fontWeight: '600' },
-  pageTag: { fontSize: 10, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase' },
+  folderTag: { fontSize: 10, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase' },
   taskTitle: { fontSize: 15, fontWeight: '600' },
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 1 },
   undoBar: {
