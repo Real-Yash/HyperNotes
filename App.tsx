@@ -277,6 +277,7 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenFolder, onOpenBin }
 
       {searching ? (
         <FlatList
+          key="search"
           data={foundTasks}
           keyExtractor={item => 't' + item.id}
           keyboardShouldPersistTaps="handled"
@@ -296,6 +297,7 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenFolder, onOpenBin }
         />
       ) : view !== 'all' ? (
         <FlatList
+          key="smart"
           data={dueTasks}
           keyExtractor={item => 'd' + item.id}
           renderItem={({ item }) => <CrossTaskRow theme={theme} task={item} onToggle={toggleTask} onOpen={openTaskFolder} />}
@@ -307,6 +309,7 @@ function HomeScreen({ theme, themeName, onToggleTheme, onOpenFolder, onOpenBin }
         />
       ) : (
         <FlatList
+          key="folders"
           data={tiles}
           keyExtractor={item => (item === 'create' ? '__create__' : 'f' + item.id)}
           numColumns={2}
